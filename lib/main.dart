@@ -41,6 +41,7 @@ class _MyAppState extends State<MyApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      debugShowCheckedModeBanner: false,
       title: 'Bible App',
       theme: _isDarkMode ? ThemeData.dark() : ThemeData.light(),
       home: BookSelectionScreen(toggleTheme: _toggleTheme),
