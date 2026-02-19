@@ -1,7 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
-        android:label="bible"
-        android:name="${applicationName}"
+        android:label="Bible"
+        android:name="Bible"
         android:icon="@mipmap/launcher_icon">
         <activity
             android:name=".MainActivity"
