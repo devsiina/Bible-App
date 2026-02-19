@@ -2,13 +2,34 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/gestures.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+/// ---------------------- GLOBAL PREFS ----------------------
+late SharedPreferences prefs;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Hive.initFlutter();
-  await Hive.openBox('bibleBox'); // single box, no adapters
+  prefs = await SharedPreferences.getInstance();
   runApp(const MyApp());
+}
+
+/// ---------------------- STORAGE HELPERS ----------------------
+Map<String, int> getHighlightsMap() {
+  final str = prefs.getString('highlights');
+  if (str == null) return {};
+  return Map<String, int>.from(jsonDecode(str).map((k, v) => MapEntry(k, v as int)));
+}
+
+Map<String, String> getSavedVersesMap() {
+  final str = prefs.getString('saved_verses_map');
+  if (str == null) return {};
+  return Map<String, String>.from(jsonDecode(str).map((k, v) => MapEntry(k, v.toString())));
+}
+
+Map<String, String> getNotesMap() {
+  final str = prefs.getString('notes');
+  if (str == null) return {};
+  return Map<String, String>.from(jsonDecode(str).map((k, v) => MapEntry(k, v.toString())));
 }
 
 /// ---------------------- APP ROOT ----------------------
@@ -20,20 +41,18 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
-  late Box box;
   bool _isDarkMode = false;
 
   @override
   void initState() {
     super.initState();
-    box = Hive.box('bibleBox');
-    _isDarkMode = box.get('darkMode', defaultValue: false);
+    _isDarkMode = prefs.getBool('darkMode') ?? false;
   }
 
   void _toggleTheme() {
     setState(() {
       _isDarkMode = !_isDarkMode;
-      box.put('darkMode', _isDarkMode);
+      prefs.setBool('darkMode', _isDarkMode);
     });
   }
 
@@ -175,42 +194,44 @@ class ChapterViewScreen extends StatefulWidget {
 class _ChapterViewScreenState extends State<ChapterViewScreen> {
   List<Map<String, dynamic>> verses = [];
   Set<String> selectedVerses = {};
-  late Box box;
 
   @override
   void initState() {
     super.initState();
-    box = Hive.box('bibleBox');
     fetchChapter(widget.book, widget.chapter);
   }
 
   String keyFor(int verse) => "${widget.book}_${widget.chapter}_$verse";
 
   Future<void> fetchChapter(String book, int chapter) async {
-    final res = await http.get(Uri.parse('https://bible-api.com/$book+$chapter?translation=kjv'));
-    final data = jsonDecode(res.body);
-
-    setState(() {
-      verses = (data['verses'] as List).map((v) {
-        return {
-          'verse': v['verse'],
-          // Removing unnecessary line breaks
-          'text': v['text'].toString().replaceAll(RegExp(r'\n+'), ' ').trim(),
-        };
-      }).toList();
-    });
-    updateVersesFromBox();
+    try {
+      final res = await http.get(Uri.parse('https://bible-api.com/$book+$chapter?translation=kjv'));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        setState(() {
+          verses = (data['verses'] as List).map((v) {
+            return {
+              'verse': v['verse'],
+              'text': v['text'].toString().replaceAll(RegExp(r'\n+'), ' ').trim(),
+            };
+          }).toList();
+        });
+        updateVersesFromPrefs();
+      }
+    } catch (e) {
+      debugPrint("Network or parsing error: $e");
+    }
   }
 
-  void updateVersesFromBox() {
-    final highlights = box.get('highlights', defaultValue: <String, int>{});
-    final savedMap = box.get('saved_verses_map', defaultValue: <String, dynamic>{});
+  void updateVersesFromPrefs() {
+    final highlights = getHighlightsMap();
+    final savedMap = getSavedVersesMap();
     
     setState(() {
       for (var v in verses) {
         final key = keyFor(v['verse']);
         v['saved'] = savedMap.containsKey(key);
-        v['color'] = highlights[key] != null ? Color(highlights[key]) : null;
+        v['color'] = highlights[key] != null ? Color(highlights[key]!) : null;
       }
     });
   }
@@ -244,7 +265,7 @@ class _ChapterViewScreenState extends State<ChapterViewScreen> {
                 ])
                   GestureDetector(
                     onTap: () {
-                      final map = Map<String, int>.from(box.get('highlights', defaultValue: {}));
+                      final map = getHighlightsMap();
                       for (var key in selectedVerses) {
                         if (c == null) {
                           map.remove(key);
@@ -252,8 +273,8 @@ class _ChapterViewScreenState extends State<ChapterViewScreen> {
                           map[key] = c.value;
                         }
                       }
-                      box.put('highlights', map);
-                      updateVersesFromBox();
+                      prefs.setString('highlights', jsonEncode(map));
+                      updateVersesFromPrefs();
                       Navigator.pop(context);
                       clearSelection();
                     },
@@ -283,7 +304,7 @@ class _ChapterViewScreenState extends State<ChapterViewScreen> {
                   Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => AddNoteScreen(keys: selectedVerses.toList())),
-                  ).then((_) => updateVersesFromBox());
+                  ).then((_) => updateVersesFromPrefs());
                 },
               ),
             ),
@@ -309,7 +330,7 @@ class _ChapterViewScreenState extends State<ChapterViewScreen> {
                 icon: const Icon(Icons.bookmark_add),
                 label: const Text("Save / Unsave Verse(s)"),
                 onPressed: () {
-                  final savedMap = Map<String, String>.from(box.get('saved_verses_map', defaultValue: {}));
+                  final savedMap = getSavedVersesMap();
                   bool allSaved = selectedVerses.every((k) => savedMap.containsKey(k));
 
                   for (var key in selectedVerses) {
@@ -320,8 +341,8 @@ class _ChapterViewScreenState extends State<ChapterViewScreen> {
                       savedMap[key] = verseData['text'];
                     }
                   }
-                  box.put('saved_verses_map', savedMap);
-                  updateVersesFromBox();
+                  prefs.setString('saved_verses_map', jsonEncode(savedMap));
+                  updateVersesFromPrefs();
                   Navigator.pop(context);
                   clearSelection();
                 },
@@ -400,20 +421,18 @@ class AddNoteScreen extends StatefulWidget {
 
 class _AddNoteScreenState extends State<AddNoteScreen> {
   final TextEditingController _controller = TextEditingController();
-  late Box box;
 
   @override
   void initState() {
     super.initState();
-    box = Hive.box('bibleBox');
     if (widget.keys.length == 1) {
-      final notes = Map<String, String>.from(box.get('notes', defaultValue: {}));
+      final notes = getNotesMap();
       _controller.text = notes[widget.keys.first] ?? "";
     }
   }
 
   void saveNote() {
-    final notes = Map<String, String>.from(box.get('notes', defaultValue: {}));
+    final notes = getNotesMap();
     final text = _controller.text.trim();
     for (var key in widget.keys) {
       if (text.isEmpty) {
@@ -422,7 +441,7 @@ class _AddNoteScreenState extends State<AddNoteScreen> {
         notes[key] = text;
       }
     }
-    box.put('notes', notes);
+    prefs.setString('notes', jsonEncode(notes));
     Navigator.pop(context);
   }
 
@@ -468,8 +487,7 @@ class ViewNoteScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final box = Hive.box('bibleBox');
-    final notes = Map<String, String>.from(box.get('notes', defaultValue: {}));
+    final notes = getNotesMap();
     
     final relevantNotes = keys.where((k) => notes.containsKey(k)).map((k) {
       final parts = k.split('_');
@@ -500,8 +518,7 @@ class SavedVersesScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final box = Hive.box('bibleBox');
-    final savedMap = Map<String, String>.from(box.get('saved_verses_map', defaultValue: {}));
+    final savedMap = getSavedVersesMap();
     final keys = savedMap.keys.toList();
 
     return Scaffold(
@@ -531,8 +548,7 @@ class AllNotesScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final box = Hive.box('bibleBox');
-    final notes = Map<String, String>.from(box.get('notes', defaultValue: {}));
+    final notes = getNotesMap();
     final keys = notes.keys.toList();
 
     return Scaffold(
